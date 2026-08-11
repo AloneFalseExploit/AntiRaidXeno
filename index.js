@@ -6,7 +6,6 @@ const {
   ChannelType,
   AttachmentBuilder
 } = require("discord.js");
-const fs = require("fs");
 
 const client = new Client({
   intents: [
@@ -18,16 +17,41 @@ const client = new Client({
   ]
 });
 
-const OWNER_ID = "1515531454967447572"; // Tu ID
+const OWNER_ID = "1515531454967447572";
 const PREFIX = "!";
+
+// ─── Lista blanca de bots permitidos ──────────────────────────────────────
+const BOTS_PERMITIDOS = [
+  "159985870458322944", // MEE6
+  "235148962103951360", // Dyno
+  "155149108183695360", // Carl-bot
+  "492797765767110676", // Assyst
+  "739559860963983380", // Auto Role Bot
+  "575776004233232386", // Discohook Utils
+  "292953664492929025", // FlaviBot
+  "294882584201003009", // Giveaway Boat
+  "836755690791960596", // Green-bot 2
+  "1005416453525479434", // Invite Management
+  "616460614570336296", // Invite Tracker
+  "697679361523081246", // InviteLogger
+  "578950272286638132", // Koya
+  "482537994984448020", // Lawliet
+  "500765981217013763", // Nekotina
+  "356268235697553409", // Peace Radio
+  "557628352828014614", // Ticket King
+  "513085505056383006", // TTS Bot
+  "955946800370245673", // Vulcan
+  "409785562566164490", // Wave Music
+  "1002058709022429194", // zagzag
+  "1090229656795885608", // XN PROTECT
+];
 
 // ─── Anti-raid: rastreo de entradas ───────────────────────────────────────
 const joinTracker = new Map();
-const RAID_THRESHOLD = 5;     // usuarios en...
-const RAID_WINDOW = 8000;     // ...8 segundos = raid detectado
+const RAID_THRESHOLD = 5;
+const RAID_WINDOW = 8000;
 const raidMode = new Map();
 
-// ─── Utilidades ───────────────────────────────────────────────────────────
 function soloOwner(msg) {
   return msg.author.id === OWNER_ID;
 }
@@ -135,17 +159,15 @@ async function restaurarBackup(guild, backup, msg) {
 
     await progreso.edit("✅ Roles eliminados. Creando roles del backup...");
 
-    const mapaRoles = new Map();
     for (const r of backup.roles) {
       try {
-        const nuevo = await guild.roles.create({
+        await guild.roles.create({
           name: r.nombre,
           color: r.color,
           hoist: r.hoist,
           mentionable: r.mentionable,
           permissions: BigInt(r.permisos)
         });
-        mapaRoles.set(r.nombre, nuevo);
       } catch {}
     }
 
@@ -198,7 +220,7 @@ async function restaurarBackup(guild, backup, msg) {
       } catch {}
     }
 
-    await progreso.edit("✅ ¡Backup restaurado completamente! El servidor está como antes.");
+    await progreso.edit("✅ ¡Backup restaurado completamente!");
   } catch (e) {
     await progreso.edit(`❌ Error durante la restauración: ${e.message}`);
   }
@@ -229,14 +251,14 @@ async function desactivarLockdown(guild) {
 client.on("guildMemberAdd", async (member) => {
   const { guild } = member;
 
-  // Banear bots no autorizados
   if (member.user.bot) {
+    // Permitir bots de la lista blanca
+    if (BOTS_PERMITIDOS.includes(member.user.id)) return;
     await member.ban({ reason: "Anti-raid: bot no autorizado" }).catch(() => {});
     log(guild, `🤖 Bot **${member.user.tag}** baneado automáticamente al entrar.`, 0xFF6600);
     return;
   }
 
-  // Rastrear entradas rápidas
   const ahora = Date.now();
   if (!joinTracker.has(guild.id)) joinTracker.set(guild.id, []);
   const entradas = joinTracker.get(guild.id);
@@ -256,7 +278,7 @@ client.on("guildMemberAdd", async (member) => {
       await m.kick("Anti-raid: entrada masiva detectada").catch(() => {});
     }
 
-    log(guild, `⚠️ **RAID DETECTADO** — ${recientes.length} usuarios en ${RAID_WINDOW / 1000}s. Lockdown activo y usuarios kickeados.`, 0xFF0000);
+    log(guild, `⚠️ **RAID DETECTADO** — ${recientes.length} usuarios en ${RAID_WINDOW / 1000}s. Lockdown activo.`, 0xFF0000);
   }
 });
 
@@ -265,7 +287,6 @@ client.on("messageCreate", async (msg) => {
   if (msg.author.bot) return;
   if (!msg.guild) return;
 
-  // Anti menciones masivas
   const menciones = msg.mentions.users.size + msg.mentions.roles.size;
   const tieneEveryone = msg.mentions.everyone;
 
@@ -273,7 +294,7 @@ client.on("messageCreate", async (msg) => {
     if (!msg.member?.permissions.has(PermissionFlagsBits.Administrator)) {
       await msg.delete().catch(() => {});
       await msg.member?.timeout(5 * 60 * 1000, "Anti-raid: menciones masivas").catch(() => {});
-      log(msg.guild, `📢 **${msg.author.tag}** silenciado 5 min por menciones masivas (${menciones} menciones).`, 0xFF8800);
+      log(msg.guild, `📢 **${msg.author.tag}** silenciado 5 min por menciones masivas.`, 0xFF8800);
       return;
     }
   }
@@ -284,21 +305,16 @@ client.on("messageCreate", async (msg) => {
   const args = msg.content.slice(PREFIX.length).trim().split(/ +/);
   const cmd = args[0].toLowerCase();
 
-  // !backup
   if (cmd === "backup") {
     await msg.reply("⏳ Generando backup...");
     const backup = await hacerBackup(msg.guild);
     const json = JSON.stringify(backup, null, 2);
     const buffer = Buffer.from(json, "utf-8");
     const archivo = new AttachmentBuilder(buffer, { name: `backup_${msg.guild.name}_${Date.now()}.json` });
-    await msg.channel.send({
-      content: "✅ Backup generado. Guardá este archivo en un lugar seguro.",
-      files: [archivo]
-    });
+    await msg.channel.send({ content: "✅ Backup generado. Guardá este archivo.", files: [archivo] });
     return;
   }
 
-  // !restore
   if (cmd === "restore") {
     if (msg.attachments.size === 0) return msg.reply("❌ Adjuntá el archivo `.json` del backup.");
     const archivo = msg.attachments.first();
@@ -314,7 +330,6 @@ client.on("messageCreate", async (msg) => {
     return;
   }
 
-  // !lockdown
   if (cmd === "lockdown") {
     if (raidMode.get(msg.guild.id)) {
       await desactivarLockdown(msg.guild);
@@ -326,21 +341,20 @@ client.on("messageCreate", async (msg) => {
     return;
   }
 
-  // !status
   if (cmd === "status") {
     const modo = raidMode.get(msg.guild.id) ? "🔒 LOCKDOWN ACTIVO" : "✅ Normal";
     const embed = new EmbedBuilder()
       .setTitle("🛡️ Estado del Anti-Raid")
       .addFields(
         { name: "Modo actual", value: modo },
-        { name: "Umbral de raid", value: `${RAID_THRESHOLD} usuarios en ${RAID_WINDOW / 1000}s` }
+        { name: "Umbral de raid", value: `${RAID_THRESHOLD} usuarios en ${RAID_WINDOW / 1000}s` },
+        { name: "Bots permitidos", value: `${BOTS_PERMITIDOS.length} bots en lista blanca` }
       )
       .setColor(0x5865F2);
     msg.reply({ embeds: [embed] });
     return;
   }
 
-  // !ayuda
   if (cmd === "ayuda") {
     const embed = new EmbedBuilder()
       .setTitle("🛡️ Comandos Anti-Raid")
@@ -360,4 +374,3 @@ client.on("ready", () => {
 });
 
 client.login(process.env.TOKEN);
-      
