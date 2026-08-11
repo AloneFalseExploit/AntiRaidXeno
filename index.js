@@ -20,31 +20,10 @@ const client = new Client({
 const OWNER_ID = "1515531454967447572";
 const PREFIX = "!";
 
-// ─── Lista blanca de bots permitidos ──────────────────────────────────────
-const BOTS_PERMITIDOS = [
-  "159985870458322944", // MEE6
-  "235148962103951360", // Dyno
-  "155149108183695360", // Carl-bot
-  "492797765767110676", // Assyst
-  "739559860963983380", // Auto Role Bot
-  "575776004233232386", // Discohook Utils
-  "292953664492929025", // FlaviBot
-  "294882584201003009", // Giveaway Boat
-  "836755690791960596", // Green-bot 2
-  "1005416453525479434", // Invite Management
-  "616460614570336296", // Invite Tracker
-  "697679361523081246", // InviteLogger
-  "578950272286638132", // Koya
-  "482537994984448020", // Lawliet
-  "500765981217013763", // Nekotina
-  "356268235697553409", // Peace Radio
-  "557628352828014614", // Ticket King
-  "513085505056383006", // TTS Bot
-  "955946800370245673", // Vulcan
-  "409785562566164490", // Wave Music
-  "1002058709022429194", // zagzag
-  "1090229656795885608", // XN PROTECT
-];
+// ─── Anti-spam: rastreo de mensajes ───────────────────────────────────────
+const spamTracker = new Map(); // userId -> [timestamps]
+const SPAM_THRESHOLD = 10;    // mensajes en...
+const SPAM_WINDOW = 5000;     // ...5 segundos = spam
 
 // ─── Anti-raid: rastreo de entradas ───────────────────────────────────────
 const joinTracker = new Map();
@@ -144,11 +123,11 @@ async function hacerBackup(guild) {
 }
 
 async function restaurarBackup(guild, backup, msg) {
-  const progreso = await msg.channel.send("⏳ Restaurando backup... esto puede tardar un momento.");
+  const progreso = await msg.channel.send("⏳ Restaurando backup...");
 
   try {
     await guild.setName(backup.nombre).catch(() => {});
-    await progreso.edit("✅ Nombre restaurado. Eliminando roles actuales...");
+    await progreso.edit("✅ Nombre restaurado. Eliminando roles...");
 
     for (const rol of guild.roles.cache.values()) {
       if (rol.id === guild.id) continue;
@@ -156,8 +135,6 @@ async function restaurarBackup(guild, backup, msg) {
       if (rol.position >= guild.members.me.roles.highest.position) continue;
       await rol.delete().catch(() => {});
     }
-
-    await progreso.edit("✅ Roles eliminados. Creando roles del backup...");
 
     for (const r of backup.roles) {
       try {
@@ -171,13 +148,11 @@ async function restaurarBackup(guild, backup, msg) {
       } catch {}
     }
 
-    await progreso.edit("✅ Roles creados. Eliminando canales actuales...");
+    await progreso.edit("✅ Roles creados. Eliminando canales...");
 
     for (const canal of guild.channels.cache.values()) {
       await canal.delete().catch(() => {});
     }
-
-    await progreso.edit("✅ Canales eliminados. Creando categorías...");
 
     const mapaCategorias = new Map();
     for (const cat of backup.categorias) {
@@ -195,8 +170,6 @@ async function restaurarBackup(guild, backup, msg) {
         mapaCategorias.set(cat.id, nueva);
       } catch {}
     }
-
-    await progreso.edit("✅ Categorías creadas. Creando canales...");
 
     for (const c of backup.canales) {
       try {
@@ -222,7 +195,7 @@ async function restaurarBackup(guild, backup, msg) {
 
     await progreso.edit("✅ ¡Backup restaurado completamente!");
   } catch (e) {
-    await progreso.edit(`❌ Error durante la restauración: ${e.message}`);
+    await progreso.edit(`❌ Error: ${e.message}`);
   }
 }
 
@@ -234,7 +207,7 @@ async function activarLockdown(guild) {
     if (canal.type !== ChannelType.GuildText) continue;
     await canal.permissionOverwrites.edit(everyone, { SendMessages: false }).catch(() => {});
   }
-  log(guild, "🔒 **LOCKDOWN ACTIVADO** — Raid detectado. Todos los canales bloqueados.", 0xFF0000);
+  log(guild, "🔒 **LOCKDOWN ACTIVADO** — Raid detectado.", 0xFF0000);
 }
 
 async function desactivarLockdown(guild) {
@@ -244,21 +217,20 @@ async function desactivarLockdown(guild) {
     if (canal.type !== ChannelType.GuildText) continue;
     await canal.permissionOverwrites.edit(everyone, { SendMessages: null }).catch(() => {});
   }
-  log(guild, "🔓 **LOCKDOWN DESACTIVADO** — El servidor volvió a la normalidad.", 0x00FF88);
+  log(guild, "🔓 **LOCKDOWN DESACTIVADO** — Servidor normal.", 0x00FF88);
 }
 
 // ─── Evento: miembro entra ────────────────────────────────────────────────
 client.on("guildMemberAdd", async (member) => {
   const { guild } = member;
 
+  // Bots: no banear automáticamente, solo monitorear por spam
   if (member.user.bot) {
-    // Permitir bots de la lista blanca
-    if (BOTS_PERMITIDOS.includes(member.user.id)) return;
-    await member.ban({ reason: "Anti-raid: bot no autorizado" }).catch(() => {});
-    log(guild, `🤖 Bot **${member.user.tag}** baneado automáticamente al entrar.`, 0xFF6600);
+    log(guild, `🤖 Bot **${member.user.tag}** entró al servidor. Será expulsado si hace spam.`, 0xFFFF00);
     return;
   }
 
+  // Rastrear entradas rápidas de usuarios
   const ahora = Date.now();
   if (!joinTracker.has(guild.id)) joinTracker.set(guild.id, []);
   const entradas = joinTracker.get(guild.id);
@@ -278,23 +250,58 @@ client.on("guildMemberAdd", async (member) => {
       await m.kick("Anti-raid: entrada masiva detectada").catch(() => {});
     }
 
-    log(guild, `⚠️ **RAID DETECTADO** — ${recientes.length} usuarios en ${RAID_WINDOW / 1000}s. Lockdown activo.`, 0xFF0000);
+    log(guild, `⚠️ **RAID DETECTADO** — ${recientes.length} usuarios en ${RAID_WINDOW / 1000}s.`, 0xFF0000);
   }
 });
 
 // ─── Mensajes ─────────────────────────────────────────────────────────────
 client.on("messageCreate", async (msg) => {
-  if (msg.author.bot) return;
   if (!msg.guild) return;
 
-  const menciones = msg.mentions.users.size + msg.mentions.roles.size;
-  const tieneEveryone = msg.mentions.everyone;
+  const ahora = Date.now();
+  const userId = msg.author.id;
+  const esBot = msg.author.bot;
 
-  if (menciones >= 5 || tieneEveryone) {
+  // ─── Anti-spam (aplica a bots Y usuarios) ───────────────────────────────
+  if (!soloOwner(msg)) {
+    if (!spamTracker.has(userId)) spamTracker.set(userId, []);
+    const mensajes = spamTracker.get(userId);
+    mensajes.push(ahora);
+
+    const recientes = mensajes.filter(t => ahora - t < SPAM_WINDOW);
+    spamTracker.set(userId, recientes);
+
+    if (recientes.length >= SPAM_THRESHOLD) {
+      spamTracker.set(userId, []); // resetear contador
+
+      if (esBot) {
+        // Bot haciendo spam → expulsar
+        const miembro = msg.guild.members.cache.get(userId);
+        if (miembro) {
+          await miembro.kick("Anti-spam: bot haciendo spam").catch(() => {});
+          log(msg.guild, `🤖 Bot **${msg.author.tag}** expulsado por spam (+${SPAM_THRESHOLD} mensajes en ${SPAM_WINDOW / 1000}s).`, 0xFF6600);
+        }
+        return;
+      } else {
+        // Usuario haciendo spam → aislamiento 10 minutos
+        if (!msg.member?.permissions.has(PermissionFlagsBits.Administrator)) {
+          await msg.member?.timeout(10 * 60 * 1000, "Anti-spam: demasiados mensajes").catch(() => {});
+          log(msg.guild, `🔇 **${msg.author.tag}** aislado 10 min por spam (+${SPAM_THRESHOLD} mensajes en ${SPAM_WINDOW / 1000}s).`, 0xFF8800);
+          return;
+        }
+      }
+    }
+  }
+
+  if (esBot) return; // Los bots no pueden usar comandos
+
+  // ─── Anti menciones masivas ──────────────────────────────────────────────
+  const menciones = msg.mentions.users.size + msg.mentions.roles.size;
+  if (menciones >= 5 || msg.mentions.everyone) {
     if (!msg.member?.permissions.has(PermissionFlagsBits.Administrator)) {
       await msg.delete().catch(() => {});
-      await msg.member?.timeout(5 * 60 * 1000, "Anti-raid: menciones masivas").catch(() => {});
-      log(msg.guild, `📢 **${msg.author.tag}** silenciado 5 min por menciones masivas.`, 0xFF8800);
+      await msg.member?.timeout(10 * 60 * 1000, "Anti-raid: menciones masivas").catch(() => {});
+      log(msg.guild, `📢 **${msg.author.tag}** aislado 10 min por menciones masivas.`, 0xFF8800);
       return;
     }
   }
@@ -308,24 +315,22 @@ client.on("messageCreate", async (msg) => {
   if (cmd === "backup") {
     await msg.reply("⏳ Generando backup...");
     const backup = await hacerBackup(msg.guild);
-    const json = JSON.stringify(backup, null, 2);
-    const buffer = Buffer.from(json, "utf-8");
+    const buffer = Buffer.from(JSON.stringify(backup, null, 2), "utf-8");
     const archivo = new AttachmentBuilder(buffer, { name: `backup_${msg.guild.name}_${Date.now()}.json` });
-    await msg.channel.send({ content: "✅ Backup generado. Guardá este archivo.", files: [archivo] });
+    await msg.channel.send({ content: "✅ Backup generado.", files: [archivo] });
     return;
   }
 
   if (cmd === "restore") {
-    if (msg.attachments.size === 0) return msg.reply("❌ Adjuntá el archivo `.json` del backup.");
+    if (msg.attachments.size === 0) return msg.reply("❌ Adjuntá el archivo `.json`.");
     const archivo = msg.attachments.first();
     if (!archivo.name.endsWith(".json")) return msg.reply("❌ El archivo debe ser `.json`.");
     try {
       const res = await fetch(archivo.url);
-      const texto = await res.text();
-      const backup = JSON.parse(texto);
+      const backup = JSON.parse(await res.text());
       await restaurarBackup(msg.guild, backup, msg);
     } catch {
-      msg.reply("❌ Error al leer el archivo de backup.");
+      msg.reply("❌ Error al leer el backup.");
     }
     return;
   }
@@ -348,7 +353,7 @@ client.on("messageCreate", async (msg) => {
       .addFields(
         { name: "Modo actual", value: modo },
         { name: "Umbral de raid", value: `${RAID_THRESHOLD} usuarios en ${RAID_WINDOW / 1000}s` },
-        { name: "Bots permitidos", value: `${BOTS_PERMITIDOS.length} bots en lista blanca` }
+        { name: "Umbral de spam", value: `${SPAM_THRESHOLD} mensajes en ${SPAM_WINDOW / 1000}s` }
       )
       .setColor(0x5865F2);
     msg.reply({ embeds: [embed] });
@@ -359,10 +364,10 @@ client.on("messageCreate", async (msg) => {
     const embed = new EmbedBuilder()
       .setTitle("🛡️ Comandos Anti-Raid")
       .addFields(
-        { name: "!backup", value: "Genera un backup completo del servidor (.json)" },
+        { name: "!backup", value: "Genera un backup del servidor (.json)" },
         { name: "!restore + archivo.json", value: "Restaura el servidor desde un backup" },
-        { name: "!lockdown", value: "Activa o desactiva el lockdown manualmente" },
-        { name: "!status", value: "Muestra el estado actual del anti-raid" }
+        { name: "!lockdown", value: "Activa o desactiva el lockdown" },
+        { name: "!status", value: "Muestra el estado del anti-raid" }
       )
       .setColor(0x5865F2);
     msg.reply({ embeds: [embed] });
